@@ -190,19 +190,21 @@ def user_menu(uid: int):
 
 
 async def send_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """پیام خوش‌آمد را با عکس (در صورت وجود) و منوی دکمه‌ای می‌فرستد."""
+    """پیام خوش‌آمد را با عکس (در صورت وجود) و دکمه‌های شیشه‌ای می‌فرستد."""
     uid = update.effective_user.id
     menu = user_menu(uid)
+    inline_menu = kb.start_inline_kb(is_admin=db.is_admin(uid))
     if os.path.exists(WELCOME_IMAGE):
         try:
             with open(WELCOME_IMAGE, "rb") as f:
                 await update.effective_message.reply_photo(
                     photo=InputFile(f, filename="welcome.jpg"),
-                    caption=WELCOME, parse_mode=ParseMode.HTML, reply_markup=menu)
+                    caption=WELCOME, parse_mode=ParseMode.HTML,
+                    reply_markup=inline_menu)
             return
         except Exception as e:
             log.warning("ارسال عکس خوش‌آمد ناموفق بود: %s", e)
-    await update.effective_message.reply_html(WELCOME, reply_markup=menu)
+    await update.effective_message.reply_html(WELCOME, reply_markup=inline_menu)
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -570,6 +572,32 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await q.answer()
         return
 
+    # دکمه‌های شیشه‌ای منوی استارت
+    if data == "menu:search":
+        await q.answer()
+        await q.message.reply_text(SEARCH_PROMPT, reply_markup=user_menu(u.id))
+        return
+    if data == "menu:fav":
+        await q.answer()
+        await cmd_favorites(update, context)
+        return
+    if data == "menu:hist":
+        await q.answer()
+        await cmd_history(update, context)
+        return
+    if data == "menu:recent":
+        await q.answer()
+        await cmd_recent(update, context)
+        return
+    if data == "menu:help":
+        await q.answer()
+        await cmd_help(update, context)
+        return
+    if data == "menu:admin":
+        await q.answer()
+        await cmd_admin(update, context)
+        return
+
     if data == "checkjoin":
         missing = await is_member_all_channels(u.id, context)
         if missing:
@@ -684,7 +712,7 @@ async def on_inline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             items.append(InlineQueryResultPhoto(
                 id=r.movie_id,
                 photo_url=r.poster,
-                thumb_url=r.poster,
+                thumbnail_url=r.poster,
                 title=title_text,
                 description="برای دیدن اطلاعات و لینک پخش بزنید",
                 caption=f"🎬 <b>{esc(r.title)}</b>{year}{imdb}",
