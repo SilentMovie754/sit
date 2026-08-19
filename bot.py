@@ -43,10 +43,8 @@ import config
 import keyboards as kb
 from database import Database
 from formatting import esc, movie_caption, play_message, webapp_play_message
-from site_client import Episode, Movie, SearchResult, SiteClient, LoginError
+from site_client import BASE, Episode, Movie, SearchResult, SiteClient, LoginError
 from webapp import start_player_server
-from categorize import (categorize_with_indices, get_available_types,
-                      QUALITY_LABELS, TYPE_LABELS)
 from categorize import (categorize_with_indices, get_available_types,
                       QUALITY_LABELS, TYPE_LABELS)
 
@@ -141,16 +139,22 @@ def get_movie_cached(movie_id: str) -> Movie:
 
 
 async def download_bytes(url: str) -> Optional[bytes]:
-    """دانلود پوستر در ترد جداگانه (تا حلقه‌ی async بلاک نشود)."""
+    """دانلود پوستر در ترد جداگانه — با سشن سایت و پشتیبانی از فرمت‌های مختلف."""
     def _dl():
         try:
-            r = requests.get(url, headers={"User-Agent": UA}, timeout=25, verify=False)
-            if r.status_code == 200 and r.content[:3] == b"\xff\xd8\xff":
-                return r.content
-            if r.status_code == 200 and len(r.content) > 1000:
+            # اول سشن سایت را امتحان کن (عکس ممکنه پشت لاگین باشه)
+            if site and site.s.cookies:
+                r = site.s.get(url, headers={"User-Agent": UA, "Referer": BASE},
+                               timeout=25, verify=False)
+                if r.status_code == 200 and len(r.content) > 2000:
+                    return r.content
+            # بعد بدون سشن (CDN عمومی)
+            r = requests.get(url, headers={"User-Agent": UA, "Referer": BASE},
+                             timeout=25, verify=False)
+            if r.status_code == 200 and len(r.content) > 2000:
                 return r.content
         except Exception:
-            return None
+            pass
         return None
     return await asyncio.to_thread(_dl)
 
@@ -361,16 +365,40 @@ async def show_movie_card(update: Update, context: ContextTypes.DEFAULT_TYPE,
     caption = movie_caption(movie)
     markup = kb.movie_card_kb(movie, is_fav)
 
-    poster = await download_bytes(movie.poster) if movie.poster else None
-    try:
-        if poster:
+    sent = False
+    # روش ۱: ارسال URL مستقیم به تلگرام (سرورهای تلگرام دانلود می‌کنند)
+    if movie.poster:
+        try:
             await q.message.reply_photo(
-                photo=InputFile(io.BytesIO(poster), filename=f"{movie_id}.jpg"),
-                caption=caption[:1024], parse_mode=ParseMode.HTML, reply_markup=markup)
-        else:
-            await q.message.reply_html(caption[:4096], reply_markup=markup)
-    except BadRequest as e:
-        log.warning("send card fallback: %s", e)
+                photo=movie.poster,
+                caption=caption[:1024], parse_mode=ParseMode.HTML,
+                reply_markup=markup)
+            sent = True
+            log.info("پوستر با URL مستقیم ارسال شد: %s", movie.poster[:80])
+        except (BadRequest, TelegramError) as e:
+            log.warning("ارسال پوستر با URL ناموفق (%s)، تلاش با دانلود دستی: %s", e, movie.poster[:80])
+
+    # روش ۲: دانلود دستی با سشن سایت و ارسال bytes
+    if not sent and movie.poster:
+        poster_bytes = await download_bytes(movie.poster)
+        if poster_bytes:
+            try:
+                ext = ".jpg"
+                if poster_bytes[:4] == b"RIFF":
+                    ext = ".webp"
+                elif poster_bytes[:8] == b"\x89PNG\r\n\x1a\n":
+                    ext = ".png"
+                await q.message.reply_photo(
+                    photo=InputFile(io.BytesIO(poster_bytes), filename=f"{movie_id}{ext}"),
+                    caption=caption[:1024], parse_mode=ParseMode.HTML, reply_markup=markup)
+                sent = True
+                log.info("پوستر با bytes ارسال شد (%d bytes)", len(poster_bytes))
+            except (BadRequest, TelegramError) as e:
+                log.warning("ارسال پوستر با bytes هم ناموفق: %s", e)
+
+    # روش ۳: بدون عکس (فقط متن)
+    if not sent:
+        log.warning("پوستر ارسال نشد برای فیلم %s — poster='%s'", movie_id, (movie.poster or "")[:100])
         await q.message.reply_html(caption[:4096], reply_markup=markup)
 
 
@@ -669,9 +697,6 @@ async def cmd_movie_deeplink(update: Update, context: ContextTypes.DEFAULT_TYPE)
     db.upsert_user(u.id, u.username or "", u.first_name or "")
     if not await require_membership(update, context):
         return
-    # از مسیر callback استفاده می‌کنیم با ساخت یک آبجکت شبه‌کوئری نیست؛
-    # مستقیم کارت را می‌فرستیم.
-    fake = update
     try:
         movie = await asyncio.to_thread(get_movie_cached, movie_id)
     except Exception as e:
@@ -681,12 +706,32 @@ async def cmd_movie_deeplink(update: Update, context: ContextTypes.DEFAULT_TYPE)
     is_fav = db.is_favorite(u.id, movie_id)
     caption = movie_caption(movie)
     markup = kb.movie_card_kb(movie, is_fav)
-    poster = await download_bytes(movie.poster) if movie.poster else None
-    if poster:
-        await update.effective_message.reply_photo(
-            photo=InputFile(io.BytesIO(poster), filename=f"{movie_id}.jpg"),
-            caption=caption[:1024], parse_mode=ParseMode.HTML, reply_markup=markup)
-    else:
+
+    sent = False
+    if movie.poster:
+        try:
+            await update.effective_message.reply_photo(
+                photo=movie.poster,
+                caption=caption[:1024], parse_mode=ParseMode.HTML, reply_markup=markup)
+            sent = True
+        except (BadRequest, TelegramError):
+            pass
+    if not sent and movie.poster:
+        poster_bytes = await download_bytes(movie.poster)
+        if poster_bytes:
+            try:
+                ext = ".jpg"
+                if poster_bytes[:4] == b"RIFF":
+                    ext = ".webp"
+                elif poster_bytes[:8] == b"\x89PNG\r\n\x1a\n":
+                    ext = ".png"
+                await update.effective_message.reply_photo(
+                    photo=InputFile(io.BytesIO(poster_bytes), filename=f"{movie_id}{ext}"),
+                    caption=caption[:1024], parse_mode=ParseMode.HTML, reply_markup=markup)
+                sent = True
+            except (BadRequest, TelegramError):
+                pass
+    if not sent:
         await update.effective_message.reply_html(caption[:4096], reply_markup=markup)
 
 
