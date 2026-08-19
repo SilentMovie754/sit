@@ -133,8 +133,8 @@ def webapp_play_kb(webapp_url: str) -> InlineKeyboardMarkup:
 
 
 def play_kb(https_link: str) -> InlineKeyboardMarkup:
-    """کیبورد پیام پخش: لینک مستقیم به صورت دکمه‌ی URL."""
-    rows = [[InlineKeyboardButton("🌐 لینک مستقیم (باز کردن/کپی)", url=https_link)]]
+    """دکمه‌ی تماشای آنلاین — لینک مستقیم HTTP بدون نمایش در چت."""
+    rows = [[InlineKeyboardButton("\u25b6\ufe0f \u062a\u0645\u0627\u0634\u0627\u06cc \u0622\u0646\u0644\u0627\u06cc\u0646", url=https_link)]]
     return InlineKeyboardMarkup(rows)
 
 
