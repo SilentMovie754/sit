@@ -422,20 +422,11 @@ async def play_episode(update: Update, context: ContextTypes.DEFAULT_TYPE,
     except Exception:
         pass
 
-    # روش WebApp — لینک فیلم مخفی می‌ماند
-    if config.WEBAPP_URL:
-        from webapp import build_player_url
-        webapp_url = build_player_url(http_link, movie.title, ep.label)
-        await q.message.reply_html(
-            webapp_play_message(movie, ep),
-            reply_markup=kb.webapp_play_kb(webapp_url),
-            disable_web_page_preview=True)
-    else:
-        # روش قدیمی — لینک مستقیم نمایش داده می‌شود
-        await q.message.reply_html(
-            play_message(movie, ep, vlc_link, http_link),
-            reply_markup=kb.play_kb(http_link),
-            disable_web_page_preview=True)
+    # دکمه‌ی تماشا — لینک HTTP مستقیم (بدون نمایش لینک در چت)
+    await q.message.reply_html(
+        webapp_play_message(movie, ep),
+        reply_markup=kb.play_kb(http_link),
+        disable_web_page_preview=True)
 
 
 # ---------------- علاقه‌مندی ----------------
