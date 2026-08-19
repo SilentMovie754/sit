@@ -67,11 +67,6 @@ SESSION_PATH: str = os.environ.get("SESSION_PATH", "data/site_session.pkl")
 # روی VPS خارج از ایران این را خالی بگذارید.
 TELEGRAM_PROXY: str = os.environ.get("TELEGRAM_PROXY", "").strip()
 
-# ---- WebApp پلیر ----
-# آدرس سرویس Render خودت (این صفحه پلیر همونجا سرو میشه).
-# مثال: https://silentmovie.onrender.com
-WEBAPP_URL: str = os.environ.get("WEBAPP_URL", "").rstrip("/")
-
 
 def token_is_placeholder() -> bool:
     return (not BOT_TOKEN) or BOT_TOKEN.startswith("PUT-YOUR")
