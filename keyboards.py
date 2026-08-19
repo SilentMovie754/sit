@@ -13,7 +13,9 @@ from telegram import (InlineKeyboardButton, InlineKeyboardMarkup,
                       KeyboardButton, ReplyKeyboardMarkup, WebAppInfo)
 
 from site_client import Movie, SearchResult
-from categorize import categorize_episodes, QUALITY_ORDER, QUALITY_LABELS, TYPE_LABELS
+from categorize import (categorize_episodes, categorize_with_indices, QUALITY_ORDER,
+                      QUALITY_LABELS, TYPE_LABELS, get_available_qualities,
+                      get_available_types, count_quality, count_type)
 
 
 # ---------------- منوی اصلی (دکمه‌های دائمی پایین صفحه) ----------------
@@ -48,77 +50,102 @@ def search_results_kb(results: List[SearchResult]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def movie_card_kb(movie: Movie, page: int, page_size: int,
-                  is_fav: bool) -> InlineKeyboardMarkup:
-    """کیبورد کارت فیلم: قسمت‌ها دسته‌بندی‌شده (کیفیت + نوع) + صفحه‌بندی."""
+def movie_card_kb(movie: Movie, is_fav: bool) -> InlineKeyboardMarkup:
+    """کیبورد مرحله‌ی ۱: انتخاب کیفیت."""
     rows: List[List[InlineKeyboardButton]] = []
-    eps = movie.episodes
-    total = len(eps)
+    cats = categorize_episodes(movie.episodes)
+    quals = get_available_qualities(cats)
 
-    if total == 0:
-        rows.append([InlineKeyboardButton("⚠️ لینکی موجود نیست", callback_data="noop")])
+    if not quals and "other" not in cats:
+        rows.append([InlineKeyboardButton("\u26a0\ufe0f \u0644\u06cc\u0646\u06a9\u06cc \u0645\u0648\u062c\u0648\u062f \u0646\u06cc\u0633\u062a", callback_data="noop")])
     else:
-        cats = categorize_episodes(eps)
-        # ساختن لیست مسطح: [(text, callback_data), ...]
-        flat = []
-        for q in QUALITY_ORDER:
-            if q not in cats:
-                continue
-            groups = cats[q]
-            for t_key, t_label in TYPE_LABELS:
-                ep_list = groups.get(t_key, [])
-                if not ep_list:
-                    continue
-                flat.append((f"📋 {QUALITY_LABELS.get(q, q)} — {t_label}", "noop"))
-                for ep_obj in ep_list:
-                    idx = eps.index(ep_obj)
-                    short = ep_obj.label[:48]
-                    if len(ep_obj.label) > 48:
-                        short += "..."
-                    flat.append((f"▶️ {short}", f"ep:{movie.movie_id}:{idx}"))
-        # اگه کیفیت "other" هست
+        for q in quals:
+            cnt = count_quality(cats, q)
+            label = QUALITY_LABELS.get(q, q)
+            rows.append([InlineKeyboardButton(
+                f"\U0001f4cf {label} ({cnt} \u0644\u06cc\u0646\u06a9)",
+                callback_data=f"q:{movie.movie_id}:{q}")])
         if "other" in cats:
-            for t_key, t_label in TYPE_LABELS:
-                ep_list = cats["other"].get(t_key, [])
-                if not ep_list:
-                    continue
-                flat.append((f"📋 سایر — {t_label}", "noop"))
-                for ep_obj in ep_list:
-                    idx = eps.index(ep_obj)
-                    short = ep_obj.label[:48]
-                    if len(ep_obj.label) > 48:
-                        short += "..."
-                    flat.append((f"▶️ {short}", f"ep:{movie.movie_id}:{idx}"))
+            cnt = count_quality(cats, "other")
+            rows.append([InlineKeyboardButton(
+                f"\U0001f4cf \u0633\u0627\u06cc\u0631 ({cnt} \u0644\u06cc\u0646\u06a9)",
+                callback_data=f"q:{movie.movie_id}:other")])
 
-        # صفحه‌بندی
-        pages = max(1, math.ceil(len(flat) / page_size))
-        page = max(0, min(page, pages - 1))
-        start = page * page_size
-        chunk = flat[start:start + page_size]
-        for text, cb in chunk:
-            if cb == "noop":
-                rows.append([InlineKeyboardButton(text, callback_data="noop")])
-            else:
-                rows.append([InlineKeyboardButton(text, callback_data=cb)])
-
-        # ناوبری
-        nav = []
-        if page > 0:
-            nav.append(InlineKeyboardButton("⬅️ قبلی", callback_data=f"epp:{movie.movie_id}:{page-1}"))
-        if pages > 1:
-            nav.append(InlineKeyboardButton(f"صفحه {page+1}/{pages}", callback_data="noop"))
-        if page < pages - 1:
-            nav.append(InlineKeyboardButton("بعدی ➡️", callback_data=f"epp:{movie.movie_id}:{page+1}"))
-        if nav:
-            rows.append(nav)
-
-    # علاقه‌مندی
     if is_fav:
-        rows.append([InlineKeyboardButton("💔 حذف از علاقه‌مندی‌ها",
+        rows.append([InlineKeyboardButton("💔 \u062d\u0630\u0641 \u0627\u0632 \u0639\u0644\u0627\u0642\u0647\u200c\u0645\u0646\u062f\u06cc\u200c\u0647\u0627",
                                           callback_data=f"unfav:{movie.movie_id}")])
     else:
-        rows.append([InlineKeyboardButton("❤️ افزودن به علاقه‌مندی‌ها",
+        rows.append([InlineKeyboardButton("❤️ \u0627\u0641\u0632\u0648\u062f\u0646 \u0628\u0647 \u0639\u0644\u0627\u0642\u0647\u200c\u0645\u0646\u062f\u06cc\u200c\u0647\u0627",
                                           callback_data=f"fav:{movie.movie_id}")])
+
+    return InlineKeyboardMarkup(rows)
+
+
+def type_select_kb(movie_id: str, quality: str, groups: dict,
+                    is_fav: bool) -> InlineKeyboardMarkup:
+    """کیبورد مرحله‌ی ۲: انتخاب نوع (دوبله/زیرنویس)."""
+    rows = []
+    for t_key, t_label in TYPE_LABELS:
+        cnt = count_type(groups, t_key)
+        if cnt:
+            rows.append([InlineKeyboardButton(
+                f"{t_label} ({cnt} \u0644\u06cc\u0646\u06a9)",
+                callback_data=f"qt:{movie_id}:{quality}:{t_key}")])
+
+    if not rows:
+        rows.append([InlineKeyboardButton("\u26a0\ufe0f \u0644\u06cc\u0646\u06a9\u06cc \u06cc\u0627\u0641\u062a \u0646\u0634\u062f", callback_data="noop")])
+
+    rows.append([InlineKeyboardButton("\u2b05\ufe0f \u0628\u0627\u0632\u06af\u0634\u062a", callback_data=f"bq:{movie_id}")])
+
+    if is_fav:
+        rows.append([InlineKeyboardButton("💔 \u062d\u0630\u0641 \u0627\u0632 \u0639\u0644\u0627\u0642\u0647\u200c\u0645\u0646\u062f\u06cc\u200c\u0647\u0627",
+                                          callback_data=f"unfav:{movie_id}")])
+    else:
+        rows.append([InlineKeyboardButton("❤️ \u0627\u0641\u0632\u0648\u062f\u0646 \u0628\u0647 \u0639\u0644\u0627\u0642\u0647\u200c\u0645\u0646\u062f\u06cc\u200c\u0647\u0627",
+                                          callback_data=f"fav:{movie_id}")])
+
+    return InlineKeyboardMarkup(rows)
+
+
+def episode_list_kb(movie_id: str, quality: str, ep_type: str,
+                      indexed_eps: list, page: int, page_size: int,
+                      is_fav: bool) -> InlineKeyboardMarkup:
+    """کیبورد مرحله‌ی ۳: لیست قسمت‌ها."""
+    rows = []
+    total = len(indexed_eps)
+    pages = max(1, math.ceil(total / page_size))
+    page = max(0, min(page, pages - 1))
+    start = page * page_size
+    chunk = indexed_eps[start:start + page_size]
+
+    for orig_idx, ep in chunk:
+        short = ep.label[:52]
+        if len(ep.label) > 52:
+            short += "..."
+        rows.append([InlineKeyboardButton(
+            f"\u25b6\ufe0f {short}",
+            callback_data=f"ep:{movie_id}:{orig_idx}")])
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️ \u0642\u0628\u0644\u06cc",
+                     callback_data=f"epl:{movie_id}:{quality}:{ep_type}:{page-1}"))
+    if pages > 1:
+        nav.append(InlineKeyboardButton(f"\u0635\u0641\u062d\u0647 {page+1}/{pages}", callback_data="noop"))
+    if page < pages - 1:
+        nav.append(InlineKeyboardButton("\u0628\u0639\u062f\u06cc \u27a1\ufe0f",
+                     callback_data=f"epl:{movie_id}:{quality}:{ep_type}:{page+1}"))
+    if nav:
+        rows.append(nav)
+
+    rows.append([InlineKeyboardButton("\u2b05\ufe0f \u0628\u0627\u0632\u06af\u0634\u062a", callback_data=f"bqt:{movie_id}:{quality}")])
+
+    if is_fav:
+        rows.append([InlineKeyboardButton("💔 \u062d\u0630\u0641 \u0627\u0632 \u0639\u0644\u0627\u0642\u0647\u200c\u0645\u0646\u062f\u06cc\u200c\u0647\u0627",
+                                          callback_data=f"unfav:{movie_id}")])
+    else:
+        rows.append([InlineKeyboardButton("❤️ \u0627\u0641\u0632\u0648\u062f\u0646 \u0628\u0647 \u0639\u0644\u0627\u0642\u0647\u200c\u0645\u0646\u062f\u06cc\u200c\u0647\u0627",
+                                          callback_data=f"fav:{movie_id}")])
 
     return InlineKeyboardMarkup(rows)
 
