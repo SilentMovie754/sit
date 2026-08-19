@@ -1,0 +1,6 @@
+python-telegram-bot[job-queue]
+requests[socks]
+numpy
+Pillow
+Flask
+urllib3<2

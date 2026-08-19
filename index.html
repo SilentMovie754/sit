@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>SilentMovie Player</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: radial-gradient(circle at top, #202020, #080808 55%, #000);
+            color: #fff;
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .container {
+            width: min(1100px, 94%);
+            margin: auto;
+            padding: 20px 0 50px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+            width: 100%;
+        }
+        .logo {
+            font-size: 36px;
+            font-weight: 800;
+        }
+        .logo span { color: #777; }
+        .movie-info {
+            margin-top: 8px;
+            font-size: 15px;
+            color: #ccc;
+        }
+        .movie-info b { color: #e94560; }
+        .player {
+            display: none;
+            overflow: hidden;
+            border-radius: 18px;
+            background: #000;
+            box-shadow: 0 20px 80px rgba(0,0,0,.65);
+            width: 100%;
+        }
+        video {
+            display: block;
+            width: 100%;
+            max-height: 75vh;
+            background: #000;
+        }
+        .status {
+            text-align: center;
+            margin-top: 16px;
+            color: #aaa;
+            font-size: 14px;
+            min-height: 22px;
+        }
+        .error { color: #ff7373; }
+        .success { color: #8cff9a; }
+        .btn-row {
+            display: none;
+            gap: 12px;
+            margin-top: 18px;
+            justify-content: center;
+            width: 100%;
+        }
+        .btn-row.show { display: flex; }
+        .btn {
+            border: 0;
+            border-radius: 14px;
+            padding: 14px 28px;
+            font-size: 15px;
+            font-weight: bold;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-family: Arial, sans-serif;
+        }
+        .btn-download {
+            background: linear-gradient(135deg, #0f3460, #16213e);
+            color: #fff;
+            border: 1px solid #e94560;
+        }
+        .btn-download:hover { background: linear-gradient(135deg, #1a4a8a, #1e2d52); }
+        .btn-vlc {
+            background: #f5a623;
+            color: #111;
+        }
+        .btn-retry {
+            background: #e94560;
+            color: #fff;
+        }
+        .error-box {
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            padding: 40px 20px;
+            gap: 16px;
+            width: 100%;
+        }
+        .error-box.show { display: flex; }
+        .error-icon { font-size: 48px; }
+        .error-title { color: #ff7373; font-size: 16px; font-weight: bold; }
+        .error-desc { color: #888; font-size: 13px; line-height: 1.7; text-align: center; }
+        .loading-box {
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            padding: 60px 20px;
+            gap: 14px;
+        }
+        .loading-box.show { display: flex; }
+        .spinner {
+            width: 40px; height: 40px;
+            border: 3px solid #333;
+            border-top-color: #e94560;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @media (max-width: 650px) {
+            .container { padding-top: 14px; }
+            .logo { font-size: 28px; }
+            .btn-row { flex-direction: column; align-items: center; }
+            .btn { width: 90%; justify-content: center; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+
+    <div class="header">
+        <div class="logo">Silent<span>Movie</span></div>
+        <div class="movie-info" id="movieInfo"></div>
+    </div>
+
+    <div class="player" id="playerBox">
+        <video id="video" controls playsinline preload="metadata"></video>
+    </div>
+
+    <div class="loading-box" id="loadingBox">
+        <div class="spinner"></div>
+        <div class="status">در حال بارگذاری فیلم...</div>
+    </div>
+
+    <div class="error-box" id="errorBox">
+        <div class="error-icon">&#x26A0;&#xFE0F;</div>
+        <div class="error-title">خطا در بارگذاری</div>
+        <div class="error-desc">ممکن است فایل نامعتبر باشد یا لینک منقضی شده باشد.</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center;">
+            <button class="btn btn-retry" onclick="retryVideo()">&#x1F504; تلاش مجدد</button>
+            <a class="btn btn-download" id="downloadFallback" href="#">&#x1F4E5; دانلود فایل</a>
+            <button class="btn btn-vlc" onclick="openVlc()">&#x25B6; باز کردن با VLC</button>
+        </div>
+    </div>
+
+    <div class="status" id="status"></div>
+
+    <div class="btn-row" id="btnRow">
+        <a class="btn btn-download" id="downloadBtn" href="#">&#x1F4E5; دانلود مستقیم فایل</a>
+        <button class="btn btn-vlc" onclick="openVlc()">&#x25B6; باز کردن با VLC</button>
+    </div>
+
+</div>
+
+<script>
+(function() {
+    var video = document.getElementById("video");
+    var playerBox = document.getElementById("playerBox");
+    var loadingBox = document.getElementById("loadingBox");
+    var errorBox = document.getElementById("errorBox");
+    var btnRow = document.getElementById("btnRow");
+    var status = document.getElementById("status");
+    var movieInfo = document.getElementById("movieInfo");
+    var downloadBtn = document.getElementById("downloadBtn");
+    var downloadFallback = document.getElementById("downloadFallback");
+    var videoUrl = "";
+
+    function decode() {
+        var hash = window.location.hash.substring(1);
+        if (!hash) { showError(); return; }
+        var params = {};
+        var parts = hash.split("&");
+        for (var i = 0; i < parts.length; i++) {
+            var pair = parts[i].split("=");
+            if (pair.length === 2) {
+                params[decodeURIComponent(pair[0])] = decodeURIComponent(pair[1]);
+            }
+        }
+        if (!params.v) { showError(); return; }
+        videoUrl = atob(params.v.replace(/-/g, "+").replace(/_/g, "/"));
+        if (params.t || params.e) {
+            var info = "";
+            if (params.t) info += "<b>" + params.t + "</b>";
+            if (params.e) info += (params.t ? " &mdash; " : "") + params.e;
+            movieInfo.innerHTML = info;
+        }
+        loadVideo();
+    }
+
+    function loadVideo() {
+        loadingBox.classList.add("show");
+        errorBox.classList.remove("show");
+        playerBox.style.display = "none";
+        btnRow.classList.remove("show");
+        status.textContent = "";
+        status.className = "status";
+        video.pause();
+        video.removeAttribute("src");
+        video.load();
+        video.src = videoUrl;
+        downloadBtn.href = videoUrl;
+        downloadFallback.href = videoUrl;
+        video.load();
+    }
+
+    video.addEventListener("canplay", function() {
+        loadingBox.classList.remove("show");
+        playerBox.style.display = "block";
+        btnRow.classList.add("show");
+        status.textContent = "فیلم آماده پخش است.";
+        status.className = "status success";
+        video.play().catch(function() {
+            status.textContent = "فیلم آماده است؛ روی Play بزنید.";
+        });
+    });
+
+    video.addEventListener("error", function() { showError(); });
+    video.addEventListener("abort", function() { if (videoUrl) showError(); });
+
+    function showError() {
+        loadingBox.classList.remove("show");
+        playerBox.style.display = "none";
+        btnRow.classList.remove("show");
+        errorBox.classList.add("show");
+        status.textContent = "مرورگر نتوانست این لینک را پخش کند.";
+        status.className = "status error";
+    }
+
+    window.retryVideo = function() { loadVideo(); };
+    window.openVlc = function() {
+        if (videoUrl) window.location.href = "vlc://" + videoUrl;
+    };
+
+    decode();
+})();
+</script>
+
+</body>
+</html>
