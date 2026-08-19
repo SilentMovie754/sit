@@ -14,6 +14,39 @@ def esc(s: str) -> str:
     return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def movie_info_caption(movie: Movie) -> str:
+    """کپشن کارت فیلم بدون بخش لینک‌های پخش (برای نمایش اولیه)."""
+    lines = [f"🎬 <b>{esc(movie.title)}</b>"]
+    if movie.original_title:
+        lines.append(f"🔤 <i>{esc(movie.original_title)}</i>")
+    meta = []
+    if movie.year:
+        meta.append(f"📅 {esc(movie.year)}")
+    if movie.imdb:
+        meta.append(f"⭐ IMDb {esc(movie.imdb)}")
+    if movie.age:
+        meta.append(f"🔞 {esc(movie.age)}")
+    if meta:
+        lines.append(" | ".join(meta))
+    if movie.genre:
+        lines.append(f"🎭 ژانر: {esc(movie.genre)}")
+    if movie.country:
+        lines.append(f"🌍 کشور: {esc(movie.country)}")
+    if movie.director:
+        lines.append(f"🎥 کارگردان: {esc(movie.director)}")
+    if movie.stars:
+        stars = movie.stars
+        if len(stars) > 200:
+            stars = stars[:200] + "…"
+        lines.append(f"👥 بازیگران: {esc(stars)}")
+    if movie.plot:
+        plot = movie.plot
+        if len(plot) > 800:
+            plot = plot[:800] + "…"
+        lines.append(f"\n📖 <b>خلاصه:</b>\n{esc(plot)}")
+    return "\n".join(lines)
+
+
 def movie_caption(movie: Movie) -> str:
     lines = [f"🎬 <b>{esc(movie.title)}</b>"]
     if movie.original_title:
@@ -47,7 +80,7 @@ def movie_caption(movie: Movie) -> str:
     kind = "سریال" if movie.is_series else "فیلم"
     count = len(movie.episodes)
     lines.append(f"\n📥 <b>لینک‌های پخش ({kind} — {count} مورد):</b>")
-    lines.append("روی هر قسمت بزنید تا پخش آنلاین شروع شود.")
+    lines.append("روی هر قسمت بزنید تا لینک پخش در VLC ساخته شود.")
     return "\n".join(lines)
 
 
@@ -63,13 +96,4 @@ def play_message(movie: Movie, ep, vlc_link: str, https_link: str) -> str:
         f"<code>{esc(https_link)}</code>\n\n"
         f"⏳ توجه: این لینک موقتی است و بعد از مدتی منقضی می‌شود؛ "
         f"در صورت خطا دوباره روی قسمت بزنید."
-    )
-
-
-def webapp_play_message(movie: Movie, ep) -> str:
-    """پیام پخش WebApp — بدون نمایش هیچ لینکی."""
-    return (
-        f"🎬 <b>{esc(movie.title)}</b>\n"
-        f"▶️ {esc(ep.label)}\n\n"
-        f"روی دکمه‌ی «تماشای آنلاین» بزنید تا پخش شروع شود."
     )
