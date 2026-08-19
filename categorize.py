@@ -6,8 +6,7 @@ categorize.py
 """
 from __future__ import annotations
 
-import re
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 from site_client import Episode
 
@@ -32,7 +31,6 @@ TYPE_LABELS = [
 
 
 def _detect_quality(ep: Episode) -> str:
-    """کیفیت رو از فیلد quality یا label پیدا میکنه."""
     q = str(ep.quality or "").strip()
     if q.isdigit() and q in ("2160", "1080", "720", "480", "360"):
         return q + "p"
@@ -40,22 +38,16 @@ def _detect_quality(ep: Episode) -> str:
     for q_name in QUALITY_ORDER:
         if q_name in label_lower:
             return q_name
-    # بررسی فیلد quality اگر عدد بود
     if q.isdigit():
-        if int(q) >= 2160:
-            return "2160p"
-        if int(q) >= 1080:
-            return "1080p"
-        if int(q) >= 720:
-            return "720p"
-        if int(q) >= 480:
-            return "480p"
+        if int(q) >= 2160: return "2160p"
+        if int(q) >= 1080: return "1080p"
+        if int(q) >= 720: return "720p"
+        if int(q) >= 480: return "480p"
         return "360p"
     return "other"
 
 
 def _detect_type(ep: Episode) -> str:
-    """نوع لینک: دوبله / زیرنویس / اصلی."""
     text = (ep.label + " " + ep.filename).lower()
     dub_kw = ["دوبله", "دوپله", "دوبله‌", "dubbed", "dub", "فارسی", "fa"]
     sub_kw = ["زیرنویس", "زیر نویس", "sub", "subtitle", "چسبیده"]
@@ -69,18 +61,50 @@ def _detect_type(ep: Episode) -> str:
 
 
 def categorize_episodes(episodes: List[Episode]) -> Dict[str, Dict[str, List[Episode]]]:
-    """
-    لیست اپیزودها رو دسته‌بندی میکنه.
-    خروجی: {quality: {type: [ep, ...], ...}, ...}
-    مثال: {"1080p": {"dub": [ep1, ep2], "sub": [ep3]}, "720p": {...}}
-    """
+    """خروجی: {quality: {type: [ep, ...]}}"""
     cats: Dict[str, Dict[str, List[Episode]]] = {}
     for ep in episodes:
         quality = _detect_quality(ep)
         ep_type = _detect_type(ep)
         if quality not in cats:
-            cats[quality] = {"dub": [], "sub": [], "original": []}
+            cats[quality] = {}
         if ep_type not in cats[quality]:
             cats[quality][ep_type] = []
         cats[quality][ep_type].append(ep)
     return cats
+
+
+def categorize_with_indices(episodes: List[Episode]) -> Dict[str, Dict[str, List[Tuple[int, Episode]]]]:
+    """خروجی: {quality: {type: [(original_index, ep), ...]}}
+    ایندکس اصلی رو هم نگه می‌داره تا play_episode درست کار کنه."""
+    cats: Dict[str, Dict[str, List[Tuple[int, Episode]]]] = {}
+    for i, ep in enumerate(episodes):
+        quality = _detect_quality(ep)
+        ep_type = _detect_type(ep)
+        if quality not in cats:
+            cats[quality] = {}
+        if ep_type not in cats[quality]:
+            cats[quality][ep_type] = []
+        cats[quality][ep_type].append((i, ep))
+    return cats
+
+
+def get_available_qualities(cats) -> List[str]:
+    """لیست کیفیت‌های موجود (مرتب)."""
+    return [q for q in QUALITY_ORDER if q in cats]
+
+
+def get_available_types(groups: dict) -> List[str]:
+    """لیست نوع‌های موجود برای یه کیفیت (مرتب)."""
+    return [t for t, _ in TYPE_LABELS if t in groups and groups[t]]
+
+
+def count_quality(cats, quality: str) -> int:
+    """تعداد کل لینک‌های یه کیفیت."""
+    g = cats.get(quality, {})
+    return sum(len(v) for v in g.values())
+
+
+def count_type(groups: dict, ep_type: str) -> int:
+    """تعداد لینک‌های یه نوع."""
+    return len(groups.get(ep_type, []))
