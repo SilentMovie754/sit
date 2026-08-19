@@ -45,6 +45,10 @@ from database import Database
 from formatting import esc, movie_caption, play_message, webapp_play_message
 from site_client import Episode, Movie, SearchResult, SiteClient, LoginError
 from webapp import start_player_server
+from categorize import (categorize_with_indices, get_available_types,
+                      QUALITY_LABELS, TYPE_LABELS)
+from categorize import (categorize_with_indices, get_available_types,
+                      QUALITY_LABELS, TYPE_LABELS)
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -355,9 +359,8 @@ async def show_movie_card(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
     is_fav = db.is_favorite(update.effective_user.id, movie_id)
     caption = movie_caption(movie)
-    markup = kb.movie_card_kb(movie, page, config.SEARCH_PAGE_SIZE, is_fav)
+    markup = kb.movie_card_kb(movie, is_fav)
 
-    # اولین بار: عکس + کپشن؛ صفحه‌بندی بعدی: فقط ویرایش کیبورد
     poster = await download_bytes(movie.poster) if movie.poster else None
     try:
         if poster:
@@ -367,29 +370,94 @@ async def show_movie_card(update: Update, context: ContextTypes.DEFAULT_TYPE,
         else:
             await q.message.reply_html(caption[:4096], reply_markup=markup)
     except BadRequest as e:
-        # اگر کپشن طولانی بود، متن جدا بفرست
         log.warning("send card fallback: %s", e)
         await q.message.reply_html(caption[:4096], reply_markup=markup)
 
 
-async def edit_movie_page(update: Update, context: ContextTypes.DEFAULT_TYPE,
-                          movie_id: str, page: int) -> None:
+# مرحله 2
+async def select_quality(update, context, movie_id, quality):
     q = update.callback_query
+    await q.answer()
     try:
         movie = await asyncio.to_thread(get_movie_cached, movie_id)
     except Exception:
-        await q.answer("خطا در بارگذاری", show_alert=True)
+        await q.answer("Error", show_alert=True)
         return
+    cats = categorize_with_indices(movie.episodes)
+    groups = cats.get(quality, {})
     is_fav = db.is_favorite(update.effective_user.id, movie_id)
-    markup = kb.movie_card_kb(movie, page, config.SEARCH_PAGE_SIZE, is_fav)
+    types = get_available_types(groups)
+    if len(types) <= 1:
+        ep_type = types[0] if types else "original"
+        await show_episode_list(update, context, movie_id, quality, ep_type)
+    else:
+        markup = kb.type_select_kb(movie_id, quality, groups, is_fav)
+        try:
+            await q.edit_message_reply_markup(reply_markup=markup)
+        except BadRequest:
+            pass
+
+
+# مرحله 3
+async def show_episode_list(update, context, movie_id, quality, ep_type, page=0):
+    q = update.callback_query
+    await q.answer()
+    try:
+        movie = await asyncio.to_thread(get_movie_cached, movie_id)
+    except Exception:
+        await q.answer("Error", show_alert=True)
+        return
+    cats = categorize_with_indices(movie.episodes)
+    groups = cats.get(quality, {})
+    indexed_eps = groups.get(ep_type, [])
+    is_fav = db.is_favorite(update.effective_user.id, movie_id)
+    markup = kb.episode_list_kb(movie_id, quality, ep_type,
+                                  indexed_eps, page, config.SEARCH_PAGE_SIZE, is_fav)
     try:
         await q.edit_message_reply_markup(reply_markup=markup)
     except BadRequest:
         pass
+
+
+async def back_to_quality(update, context, movie_id):
+    q = update.callback_query
     await q.answer()
+    try:
+        movie = await asyncio.to_thread(get_movie_cached, movie_id)
+    except Exception:
+        await q.answer("Error", show_alert=True)
+        return
+    is_fav = db.is_favorite(update.effective_user.id, movie_id)
+    markup = kb.movie_card_kb(movie, is_fav)
+    try:
+        await q.edit_message_reply_markup(reply_markup=markup)
+    except BadRequest:
+        pass
 
 
-# ---------------- پخش (WebApp یا لینک VLC) ----------------
+async def back_to_type(update, context, movie_id, quality):
+    q = update.callback_query
+    await q.answer()
+    try:
+        movie = await asyncio.to_thread(get_movie_cached, movie_id)
+    except Exception:
+        await q.answer("Error", show_alert=True)
+        return
+    cats = categorize_with_indices(movie.episodes)
+    groups = cats.get(quality, {})
+    is_fav = db.is_favorite(update.effective_user.id, movie_id)
+    types = get_available_types(groups)
+    if len(types) <= 1:
+        await back_to_quality(update, context, movie_id)
+    else:
+        markup = kb.type_select_kb(movie_id, quality, groups, is_fav)
+        try:
+            await q.edit_message_reply_markup(reply_markup=markup)
+        except BadRequest:
+            pass
+
+
+# پخش (WebApp یا لینک VLC) ----------------
 async def play_episode(update: Update, context: ContextTypes.DEFAULT_TYPE,
                        movie_id: str, ep_index: int) -> None:
     q = update.callback_query
@@ -449,8 +517,7 @@ async def toggle_fav(update: Update, context: ContextTypes.DEFAULT_TYPE,
     try:
         movie = await asyncio.to_thread(get_movie_cached, movie_id)
         # صفحه‌ی فعلی را نمی‌دانیم؛ صفحه ۰
-        markup = kb.movie_card_kb(movie, 0, config.SEARCH_PAGE_SIZE,
-                                  db.is_favorite(uid, movie_id))
+        markup = kb.movie_card_kb(movie, db.is_favorite(uid, movie_id))
         await q.edit_message_reply_markup(reply_markup=markup)
     except BadRequest:
         pass
@@ -514,6 +581,20 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     elif data.startswith("ep:"):
         _, mid, idx = data.split(":")
         await play_episode(update, context, mid, int(idx))
+    elif data.startswith("q:"):
+        parts = data.split(":")
+        await select_quality(update, context, parts[1], parts[2])
+    elif data.startswith("qt:"):
+        parts = data.split(":")
+        await show_episode_list(update, context, parts[1], parts[2], parts[3])
+    elif data.startswith("epl:"):
+        parts = data.split(":")
+        await show_episode_list(update, context, parts[1], parts[2], parts[3], int(parts[4]))
+    elif data.startswith("bq:"):
+        await back_to_quality(update, context, data[3:])
+    elif data.startswith("bqt:"):
+        parts = data.split(":")
+        await back_to_type(update, context, parts[1], parts[2])
     elif data.startswith("fav:"):
         await toggle_fav(update, context, data[4:], add=True)
     elif data.startswith("unfav:"):
@@ -599,7 +680,7 @@ async def cmd_movie_deeplink(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     is_fav = db.is_favorite(u.id, movie_id)
     caption = movie_caption(movie)
-    markup = kb.movie_card_kb(movie, 0, config.SEARCH_PAGE_SIZE, is_fav)
+    markup = kb.movie_card_kb(movie, is_fav)
     poster = await download_bytes(movie.poster) if movie.poster else None
     if poster:
         await update.effective_message.reply_photo(
