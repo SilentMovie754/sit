@@ -32,8 +32,7 @@ from typing import Dict, List, Optional
 
 import requests
 from telegram import (InlineKeyboardButton, InlineKeyboardMarkup, InputFile,
-                      Update, InlineQueryResultArticle, InlineQueryResultPhoto,
-                      InputTextMessageContent)
+                      Update, InlineQueryResultArticle, InputTextMessageContent)
 from telegram.constants import ChatAction, ParseMode
 from telegram.error import BadRequest, Forbidden, TelegramError
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
@@ -43,11 +42,8 @@ from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
 import config
 import keyboards as kb
 from database import Database
-from formatting import esc, movie_caption, play_message, webapp_play_message
+from formatting import esc, movie_caption, movie_info_caption, play_message
 from site_client import BASE, Episode, Movie, SearchResult, SiteClient, LoginError
-from webapp import start_player_server
-from categorize import (categorize_with_indices, get_available_types,
-                      QUALITY_LABELS, TYPE_LABELS)
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -63,6 +59,8 @@ db: Database = None            # مقداردهی در main
 site: SiteClient = None        # مقداردهی در main
 # حالت گفتگوی ادمین (منتظر ورودی): user_id -> action
 pending_admin: Dict[int, str] = {}
+# حالت جستجوی AI: user_id -> {"photo_bytes": bytes}
+pending_ai: Dict[int, dict] = {}
 
 
 # ---------------- کمک‌کننده‌ها ----------------
@@ -140,22 +138,16 @@ def get_movie_cached(movie_id: str) -> Movie:
 
 
 async def download_bytes(url: str) -> Optional[bytes]:
-    """دانلود پوستر در ترد جداگانه — با سشن سایت و پشتیبانی از فرمت‌های مختلف."""
+    """دانلود پوستر در ترد جداگانه (تا حلقه‌ی async بلاک نشود)."""
     def _dl():
         try:
-            # اول سشن سایت را امتحان کن (عکس ممکنه پشت لاگین باشه)
-            if site and site.s.cookies:
-                r = site.s.get(url, headers={"User-Agent": UA, "Referer": BASE},
-                               timeout=25, verify=False)
-                if r.status_code == 200 and len(r.content) > 2000:
-                    return r.content
-            # بعد بدون سشن (CDN عمومی)
-            r = requests.get(url, headers={"User-Agent": UA, "Referer": BASE},
-                             timeout=25, verify=False)
-            if r.status_code == 200 and len(r.content) > 2000:
+            r = requests.get(url, headers={"User-Agent": UA}, timeout=25, verify=False)
+            if r.status_code == 200 and r.content[:3] == b"\xff\xd8\xff":
+                return r.content
+            if r.status_code == 200 and len(r.content) > 1000:
                 return r.content
         except Exception:
-            pass
+            return None
         return None
     return await asyncio.to_thread(_dl)
 
@@ -163,18 +155,11 @@ async def download_bytes(url: str) -> Optional[bytes]:
 # ---------------- دستورات کاربر ----------------
 WELCOME = (
     "🎬 <b>به ربات SilentMovie خوش آمدید!</b>\n\n"
-    
-    "🍿 نام فیلم یا سریال موردنظرتان را ارسال کنید "
-    "تا در سریع‌ترین زمان برایتان جستجو کنیم.\n\n"
-    
-    "🔎 <b>مثال:</b> <code>The Lord of the Rings</code>\n\n"
-    
-    "<blockquote>"
-    "🎥 <b>فیلم موردنظرتان را انتخاب کنید، کیفیت و قسمت را مشخص کنید "
-    "و مستقیماً داخل پلیر تماشا کنید.</b>"
-    "</blockquote>\n\n"
-    
-    "⚡ سریع، ساده و بدون نیاز به برنامه‌های اضافی"
+    "کافیست نام فیلم یا سریال مورد نظرتان را بنویسید تا برایتان جستجو کنم.\n"
+    "مثال: <code>the lord of the rings</code>\n\n"
+    "پس از انتخاب فیلم، اطلاعات کامل همراه پوستر نمایش داده می‌شود و می‌توانید "
+    "روی هر قسمت بزنید تا لینک پخش در <b>VLC</b> ساخته شود.\n\n"
+    "از دکمه‌های پایین صفحه استفاده کنید 👇"
 )
 
 SEARCH_PROMPT = "🔍 نام فیلم یا سریالی که می‌خواهید را بنویسید:"
@@ -190,21 +175,19 @@ def user_menu(uid: int):
 
 
 async def send_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """پیام خوش‌آمد را با عکس (در صورت وجود) و دکمه‌های شیشه‌ای می‌فرستد."""
+    """پیام خوش‌آمد را با عکس (در صورت وجود) و منوی دکمه‌ای می‌فرستد."""
     uid = update.effective_user.id
     menu = user_menu(uid)
-    inline_menu = kb.start_inline_kb(is_admin=db.is_admin(uid))
     if os.path.exists(WELCOME_IMAGE):
         try:
             with open(WELCOME_IMAGE, "rb") as f:
                 await update.effective_message.reply_photo(
                     photo=InputFile(f, filename="welcome.jpg"),
-                    caption=WELCOME, parse_mode=ParseMode.HTML,
-                    reply_markup=inline_menu)
+                    caption=WELCOME, parse_mode=ParseMode.HTML, reply_markup=menu)
             return
         except Exception as e:
             log.warning("ارسال عکس خوش‌آمد ناموفق بود: %s", e)
-    await update.effective_message.reply_html(WELCOME, reply_markup=inline_menu)
+    await update.effective_message.reply_html(WELCOME, reply_markup=menu)
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -295,6 +278,15 @@ async def on_text_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await handle_admin_input(update, context, text)
         return
 
+    # اگر کاربر در حال جستجوی AI است (عکس فرستاده و باید اسم فیلم را بگوید)
+    if u.id in pending_ai:
+        if text.strip() == "/cancel":
+            pending_ai.pop(u.id, None)
+            await update.effective_message.reply_text("لغو شد.", reply_markup=user_menu(u.id))
+            return
+        await handle_ai_search(update, context, text)
+        return
+
     db.upsert_user(u.id, u.username or "", u.first_name or "")
 
     # دکمه‌های منوی اصلی
@@ -357,7 +349,8 @@ async def do_search(update: Update, context: ContextTypes.DEFAULT_TYPE, query: s
 
 # ---------------- نمایش کارت فیلم ----------------
 async def show_movie_card(update: Update, context: ContextTypes.DEFAULT_TYPE,
-                          movie_id: str, page: int = 0) -> None:
+                          movie_id: str) -> None:
+    """نمایش کارت اولیه‌ی فیلم (پوستر + اطلاعات + دکمه‌ی مشاهده قسمت‌ها)."""
     q = update.callback_query
     await context.bot.send_chat_action(q.message.chat_id, ChatAction.UPLOAD_PHOTO)
     try:
@@ -372,130 +365,58 @@ async def show_movie_card(update: Update, context: ContextTypes.DEFAULT_TYPE,
         return
 
     is_fav = db.is_favorite(update.effective_user.id, movie_id)
-    caption = movie_caption(movie)
-    markup = kb.movie_card_kb(movie, is_fav)
-
-    sent = False
-    # روش ۱: ارسال URL مستقیم به تلگرام (سرورهای تلگرام دانلود می‌کنند)
-    if movie.poster:
-        try:
+    caption = movie_info_caption(movie)
+    markup = kb.movie_info_kb(movie_id, is_fav)
+    poster = await download_bytes(movie.poster) if movie.poster else None
+    try:
+        if poster:
             await q.message.reply_photo(
-                photo=movie.poster,
-                caption=caption[:1024], parse_mode=ParseMode.HTML,
-                reply_markup=markup)
-            sent = True
-            log.info("پوستر با URL مستقیم ارسال شد: %s", movie.poster[:80])
-        except (BadRequest, TelegramError) as e:
-            log.warning("ارسال پوستر با URL ناموفق (%s)، تلاش با دانلود دستی: %s", e, movie.poster[:80])
-
-    # روش ۲: دانلود دستی با سشن سایت و ارسال bytes
-    if not sent and movie.poster:
-        poster_bytes = await download_bytes(movie.poster)
-        if poster_bytes:
-            try:
-                ext = ".jpg"
-                if poster_bytes[:4] == b"RIFF":
-                    ext = ".webp"
-                elif poster_bytes[:8] == b"\x89PNG\r\n\x1a\n":
-                    ext = ".png"
-                await q.message.reply_photo(
-                    photo=InputFile(io.BytesIO(poster_bytes), filename=f"{movie_id}{ext}"),
-                    caption=caption[:1024], parse_mode=ParseMode.HTML, reply_markup=markup)
-                sent = True
-                log.info("پوستر با bytes ارسال شد (%d bytes)", len(poster_bytes))
-            except (BadRequest, TelegramError) as e:
-                log.warning("ارسال پوستر با bytes هم ناموفق: %s", e)
-
-    # روش ۳: بدون عکس (فقط متن)
-    if not sent:
-        log.warning("پوستر ارسال نشد برای فیلم %s — poster='%s'", movie_id, (movie.poster or "")[:100])
+                photo=InputFile(io.BytesIO(poster), filename=f"{movie_id}.jpg"),
+                caption=caption[:1024], parse_mode=ParseMode.HTML, reply_markup=markup)
+        else:
+            await q.message.reply_html(caption[:4096], reply_markup=markup)
+    except BadRequest as e:
+        log.warning("send card fallback: %s", e)
         await q.message.reply_html(caption[:4096], reply_markup=markup)
 
 
-# مرحله 2
-async def select_quality(update, context, movie_id, quality):
+async def show_episode_list(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                           movie_id: str, page: int = 0) -> None:
+    """نمایش لیست کامل قسمت‌ها (مرحله‌ی دوم — بعد از زدن «مشاهده قسمت ها»)."""
     q = update.callback_query
     await q.answer()
     try:
         movie = await asyncio.to_thread(get_movie_cached, movie_id)
     except Exception:
-        await q.answer("Error", show_alert=True)
+        await q.answer("خطا در بارگذاری", show_alert=True)
         return
-    cats = categorize_with_indices(movie.episodes)
-    groups = cats.get(quality, {})
     is_fav = db.is_favorite(update.effective_user.id, movie_id)
-    types = get_available_types(groups)
-    if len(types) <= 1:
-        ep_type = types[0] if types else "original"
-        await show_episode_list(update, context, movie_id, quality, ep_type)
-    else:
-        markup = kb.type_select_kb(movie_id, quality, groups, is_fav)
-        try:
-            await q.edit_message_reply_markup(reply_markup=markup)
-        except BadRequest:
-            pass
-
-
-# مرحله 3
-async def show_episode_list(update, context, movie_id, quality, ep_type, page=0):
-    q = update.callback_query
-    await q.answer()
-    try:
-        movie = await asyncio.to_thread(get_movie_cached, movie_id)
-    except Exception:
-        await q.answer("Error", show_alert=True)
-        return
-    cats = categorize_with_indices(movie.episodes)
-    groups = cats.get(quality, {})
-    indexed_eps = groups.get(ep_type, [])
-    is_fav = db.is_favorite(update.effective_user.id, movie_id)
-    markup = kb.episode_list_kb(movie_id, quality, ep_type,
-                                  indexed_eps, page, config.SEARCH_PAGE_SIZE, is_fav)
+    markup = kb.movie_card_kb(movie, page, config.SEARCH_PAGE_SIZE, is_fav)
     try:
         await q.edit_message_reply_markup(reply_markup=markup)
     except BadRequest:
         pass
 
 
-async def back_to_quality(update, context, movie_id):
+async def edit_movie_page(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                          movie_id: str, page: int) -> None:
+    """صفحه‌بندی لیست قسمت‌ها (ناوبری بعدی/قبلی)."""
     q = update.callback_query
-    await q.answer()
     try:
         movie = await asyncio.to_thread(get_movie_cached, movie_id)
     except Exception:
-        await q.answer("Error", show_alert=True)
+        await q.answer("خطا در بارگذاری", show_alert=True)
         return
     is_fav = db.is_favorite(update.effective_user.id, movie_id)
-    markup = kb.movie_card_kb(movie, is_fav)
+    markup = kb.movie_card_kb(movie, page, config.SEARCH_PAGE_SIZE, is_fav)
     try:
         await q.edit_message_reply_markup(reply_markup=markup)
     except BadRequest:
         pass
-
-
-async def back_to_type(update, context, movie_id, quality):
-    q = update.callback_query
     await q.answer()
-    try:
-        movie = await asyncio.to_thread(get_movie_cached, movie_id)
-    except Exception:
-        await q.answer("Error", show_alert=True)
-        return
-    cats = categorize_with_indices(movie.episodes)
-    groups = cats.get(quality, {})
-    is_fav = db.is_favorite(update.effective_user.id, movie_id)
-    types = get_available_types(groups)
-    if len(types) <= 1:
-        await back_to_quality(update, context, movie_id)
-    else:
-        markup = kb.type_select_kb(movie_id, quality, groups, is_fav)
-        try:
-            await q.edit_message_reply_markup(reply_markup=markup)
-        except BadRequest:
-            pass
 
 
-# پخش (WebApp یا لینک VLC) ----------------
+# ---------------- پخش (ساخت لینک VLC) ----------------
 async def play_episode(update: Update, context: ContextTypes.DEFAULT_TYPE,
                        movie_id: str, ep_index: int) -> None:
     q = update.callback_query
@@ -527,10 +448,8 @@ async def play_episode(update: Update, context: ContextTypes.DEFAULT_TYPE,
         db.add_watch(update.effective_user.id, movie_id, movie.title, ep.label)
     except Exception:
         pass
-
-    # دکمه‌ی تماشا — لینک HTTP مستقیم (بدون نمایش لینک در چت)
     await q.message.reply_html(
-        webapp_play_message(movie, ep),
+        play_message(movie, ep, vlc_link, http_link),
         reply_markup=kb.play_kb(http_link),
         disable_web_page_preview=True)
 
@@ -555,7 +474,8 @@ async def toggle_fav(update: Update, context: ContextTypes.DEFAULT_TYPE,
     try:
         movie = await asyncio.to_thread(get_movie_cached, movie_id)
         # صفحه‌ی فعلی را نمی‌دانیم؛ صفحه ۰
-        markup = kb.movie_card_kb(movie, db.is_favorite(uid, movie_id))
+        markup = kb.movie_card_kb(movie, 0, config.SEARCH_PAGE_SIZE,
+                                  db.is_favorite(uid, movie_id))
         await q.edit_message_reply_markup(reply_markup=markup)
     except BadRequest:
         pass
@@ -570,32 +490,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     if data == "noop":
         await q.answer()
-        return
-
-    # دکمه‌های شیشه‌ای منوی استارت
-    if data == "menu:search":
-        await q.answer()
-        await q.message.reply_text(SEARCH_PROMPT, reply_markup=user_menu(u.id))
-        return
-    if data == "menu:fav":
-        await q.answer()
-        await cmd_favorites(update, context)
-        return
-    if data == "menu:hist":
-        await q.answer()
-        await cmd_history(update, context)
-        return
-    if data == "menu:recent":
-        await q.answer()
-        await cmd_recent(update, context)
-        return
-    if data == "menu:help":
-        await q.answer()
-        await cmd_help(update, context)
-        return
-    if data == "menu:admin":
-        await q.answer()
-        await cmd_admin(update, context)
         return
 
     if data == "checkjoin":
@@ -637,25 +531,17 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             return
 
     if data.startswith("mv:"):
-        await show_movie_card(update, context, data[3:], 0)
+        await show_movie_card(update, context, data[3:])
         await q.answer()
+    elif data.startswith("info:"):
+        movie_id = data[5:]
+        await show_episode_list(update, context, movie_id, 0)
+    elif data.startswith("epp:"):
+        _, mid, page = data.split(":")
+        await edit_movie_page(update, context, mid, int(page))
     elif data.startswith("ep:"):
         _, mid, idx = data.split(":")
         await play_episode(update, context, mid, int(idx))
-    elif data.startswith("q:"):
-        parts = data.split(":")
-        await select_quality(update, context, parts[1], parts[2])
-    elif data.startswith("qt:"):
-        parts = data.split(":")
-        await show_episode_list(update, context, parts[1], parts[2], parts[3])
-    elif data.startswith("epl:"):
-        parts = data.split(":")
-        await show_episode_list(update, context, parts[1], parts[2], parts[3], int(parts[4]))
-    elif data.startswith("bq:"):
-        await back_to_quality(update, context, data[3:])
-    elif data.startswith("bqt:"):
-        parts = data.split(":")
-        await back_to_type(update, context, parts[1], parts[2])
     elif data.startswith("fav:"):
         await toggle_fav(update, context, data[4:], add=True)
     elif data.startswith("unfav:"):
@@ -688,6 +574,75 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await q.answer()
 
 
+# ---------------- جستجوی هوشمند (AI) ----------------
+async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """وقتی کاربر عکس می‌فرستد و جستجوی AI فعال است."""
+    uid = update.effective_user.id
+    db.upsert_user(uid, update.effective_user.username or "", update.effective_user.first_name or "")
+
+    ai_enabled = db.get_setting("ai_enabled", "0") == "1"
+    ai_token = db.get_setting("ai_token", "")
+    if not ai_enabled or not ai_token:
+        await update.effective_message.reply_text(
+            "📸 عکس دریافت شد. برای جستجوی فیلم نام آن را بنویسید.",
+            reply_markup=user_menu(uid))
+        return
+
+    if not await require_membership(update, context):
+        return
+
+    photo = update.effective_message.photo[-1]
+    try:
+        file = await photo.get_file()
+        image_bytes = bytes(await file.download_as_bytearray())
+        pending_ai[uid] = {"photo_bytes": image_bytes}
+        await update.effective_message.reply_text(
+            "📸 عکس دریافت شد!\n"
+            "حالا نام فیلم یا سریال را بنویسید تا با هوش مصنوعی پیدا کنم:\n"
+            "(برای لغو: /cancel)")
+    except Exception as e:
+        log.exception("photo download failed")
+        await update.effective_message.reply_text("⚠️ خطا در دریافت عکس.")
+
+
+async def handle_ai_search(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                          movie_name: str) -> None:
+    """پردازش جستجوی AI: عکس + نام → Claude → جستجو."""
+    uid = update.effective_user.id
+    data = pending_ai.pop(uid, {})
+    photo_bytes = data.get("photo_bytes")
+    if not photo_bytes:
+        return
+
+    msg = update.effective_message
+    status_msg = await msg.reply_text("🤖 در حال تحلیل عکس با هوش مصنوعی…")
+
+    ai_token = db.get_setting("ai_token", "")
+    try:
+        from ai_search import identify_movie
+        identified = await asyncio.to_thread(
+            identify_movie, photo_bytes, movie_name, ai_token)
+        log.info("AI identified: %s → %s", movie_name, identified)
+        try:
+            await status_msg.edit_text(
+                f"🤖 نتیجه‌ی هوش مصنوعی: <b>{esc(identified)}</b>\n\n"
+                f"🔍 در حال جستجو در سایت…",
+                parse_mode=ParseMode.HTML)
+        except BadRequest:
+            pass
+        await do_search(update, context, identified)
+    except Exception as e:
+        log.exception("AI search failed")
+        db.log_error("ai_search", f"{movie_name}: {e}")
+        try:
+            await status_msg.edit_text(
+                f"⚠️ خطا در جستجوی هوشمند.\n"
+                f"جستجوی عادی با نام «{esc(movie_name)}» انجام می‌شود…")
+        except BadRequest:
+            pass
+        await do_search(update, context, movie_name)
+
+
 # ---------------- جستجوی درون‌خطی (inline) ----------------
 async def on_inline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = (update.inline_query.query or "").strip()
@@ -701,37 +656,18 @@ async def on_inline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.inline_query.answer([], cache_time=5)
         return
 
-    items = []
+    articles = []
     for r in results[:20]:
         year = f" ({r.year})" if r.year else ""
         imdb = f" ⭐{r.imdb}" if r.imdb else ""
-        title_text = f"{r.title}{year}{imdb}"
-
-        if r.poster:
-            # نمایش پوستر در نتایج inline
-            items.append(InlineQueryResultPhoto(
-                id=r.movie_id,
-                photo_url=r.poster,
-                thumbnail_url=r.poster,
-                title=title_text,
-                description="برای دیدن اطلاعات و لینک پخش بزنید",
-                caption=f"🎬 <b>{esc(r.title)}</b>{year}{imdb}",
-                parse_mode=ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🎬 مشاهده قسمت‌ها و اطلاعات",
-                                          callback_data=f"mv:{r.movie_id}")
-                ]]),
-            ))
-        else:
-            # بدون پوستر — فقط متن
-            items.append(InlineQueryResultArticle(
-                id=r.movie_id,
-                title=title_text,
-                description="برای دیدن اطلاعات و لینک پخش بزنید",
-                input_message_content=InputTextMessageContent(
-                    message_text=f"/movie_{r.movie_id}"),
-            ))
-    await update.inline_query.answer(items, cache_time=10)
+        articles.append(InlineQueryResultArticle(
+            id=r.movie_id,
+            title=f"{r.title}{year}{imdb}",
+            description="برای دیدن اطلاعات و لینک پخش بزنید",
+            input_message_content=InputTextMessageContent(
+                message_text=f"/movie_{r.movie_id}"),
+        ))
+    await update.inline_query.answer(articles, cache_time=10)
 
 
 async def cmd_movie_deeplink(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -753,34 +689,14 @@ async def cmd_movie_deeplink(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.effective_message.reply_text("⚠️ خطا در دریافت فیلم.")
         return
     is_fav = db.is_favorite(u.id, movie_id)
-    caption = movie_caption(movie)
-    markup = kb.movie_card_kb(movie, is_fav)
-
-    sent = False
-    if movie.poster:
-        try:
-            await update.effective_message.reply_photo(
-                photo=movie.poster,
-                caption=caption[:1024], parse_mode=ParseMode.HTML, reply_markup=markup)
-            sent = True
-        except (BadRequest, TelegramError):
-            pass
-    if not sent and movie.poster:
-        poster_bytes = await download_bytes(movie.poster)
-        if poster_bytes:
-            try:
-                ext = ".jpg"
-                if poster_bytes[:4] == b"RIFF":
-                    ext = ".webp"
-                elif poster_bytes[:8] == b"\x89PNG\r\n\x1a\n":
-                    ext = ".png"
-                await update.effective_message.reply_photo(
-                    photo=InputFile(io.BytesIO(poster_bytes), filename=f"{movie_id}{ext}"),
-                    caption=caption[:1024], parse_mode=ParseMode.HTML, reply_markup=markup)
-                sent = True
-            except (BadRequest, TelegramError):
-                pass
-    if not sent:
+    caption = movie_info_caption(movie)
+    markup = kb.movie_info_kb(movie_id, is_fav)
+    poster = await download_bytes(movie.poster) if movie.poster else None
+    if poster:
+        await update.effective_message.reply_photo(
+            photo=InputFile(io.BytesIO(poster), filename=f"{movie_id}.jpg"),
+            caption=caption[:1024], parse_mode=ParseMode.HTML, reply_markup=markup)
+    else:
         await update.effective_message.reply_html(caption[:4096], reply_markup=markup)
 
 
@@ -827,6 +743,7 @@ def build_application() -> Application:
     app.add_handler(MessageHandler(filters.Regex(r"^/movie_\d+"), cmd_movie_deeplink))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(InlineQueryHandler(on_inline))
+    app.add_handler(MessageHandler(filters.PHOTO, on_photo))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_admin_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text_search))
     app.add_error_handler(on_error)
@@ -839,11 +756,6 @@ def build_application() -> Application:
     return app
 
 
-def _start_player_server(port: int) -> None:
-    """Flask سرور پلیر WebApp — index.html را سرو می‌کند."""
-    start_player_server()
-
-
 def main() -> None:
     if config.token_is_placeholder():
         raise SystemExit("❌ BOT_TOKEN تنظیم نشده است. فایل .env را ویرایش کنید.")
@@ -854,12 +766,6 @@ def main() -> None:
         log.info("وضعیت لاگین اولیه به سایت: %s", "موفق" if ok else "ناموفق")
     except Exception as e:
         log.warning("لاگین اولیه ناموفق: %s", e)
-
-    # وب‌سرور پلیر ترد جداگانه (برای Render)
-    port = int(os.environ.get("PORT", "10000"))
-    import threading
-    t = threading.Thread(target=_start_player_server, args=(port,), daemon=True)
-    t.start()
 
     log.info("🤖 ربات در حال اجراست…")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
