@@ -32,7 +32,8 @@ from typing import Dict, List, Optional
 
 import requests
 from telegram import (InlineKeyboardButton, InlineKeyboardMarkup, InputFile,
-                      Update, InlineQueryResultArticle, InputTextMessageContent)
+                      Update, InlineQueryResultArticle, InlineQueryResultPhoto,
+                      InputTextMessageContent)
 from telegram.constants import ChatAction, ParseMode
 from telegram.error import BadRequest, Forbidden, TelegramError
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
@@ -606,9 +607,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if data.startswith("mv:"):
         await show_movie_card(update, context, data[3:], 0)
         await q.answer()
-    elif data.startswith("epp:"):
-        _, mid, page = data.split(":")
-        await edit_movie_page(update, context, mid, int(page))
     elif data.startswith("ep:"):
         _, mid, idx = data.split(":")
         await play_episode(update, context, mid, int(idx))
@@ -662,9 +660,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def on_inline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = (update.inline_query.query or "").strip()
     if len(query) < 2:
-        await update.inline_query.answer([], cache_time=5,
-                                         switch_pm_text="نام فیلم را بنویسید…",
-                                         switch_pm_parameter="start")
+        await update.inline_query.answer([], cache_time=5)
         return
     try:
         results = await asyncio.to_thread(site.search, query, 1)
@@ -673,19 +669,37 @@ async def on_inline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.inline_query.answer([], cache_time=5)
         return
 
-    articles = []
+    items = []
     for r in results[:20]:
         year = f" ({r.year})" if r.year else ""
         imdb = f" ⭐{r.imdb}" if r.imdb else ""
-        # چون باز کردن کارت نیازمند تعامل است، کاربر را به ربات هدایت می‌کنیم
-        articles.append(InlineQueryResultArticle(
-            id=r.movie_id,
-            title=f"{r.title}{year}{imdb}",
-            description="برای دیدن اطلاعات و لینک پخش بزنید",
-            input_message_content=InputTextMessageContent(
-                message_text=f"/movie_{r.movie_id}"),
-        ))
-    await update.inline_query.answer(articles, cache_time=10)
+        title_text = f"{r.title}{year}{imdb}"
+
+        if r.poster:
+            # نمایش پوستر در نتایج inline
+            items.append(InlineQueryResultPhoto(
+                id=r.movie_id,
+                photo_url=r.poster,
+                thumb_url=r.poster,
+                title=title_text,
+                description="برای دیدن اطلاعات و لینک پخش بزنید",
+                caption=f"🎬 <b>{esc(r.title)}</b>{year}{imdb}",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🎬 مشاهده قسمت‌ها و اطلاعات",
+                                          callback_data=f"mv:{r.movie_id}")
+                ]]),
+            ))
+        else:
+            # بدون پوستر — فقط متن
+            items.append(InlineQueryResultArticle(
+                id=r.movie_id,
+                title=title_text,
+                description="برای دیدن اطلاعات و لینک پخش بزنید",
+                input_message_content=InputTextMessageContent(
+                    message_text=f"/movie_{r.movie_id}"),
+            ))
+    await update.inline_query.answer(items, cache_time=10)
 
 
 async def cmd_movie_deeplink(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
