@@ -258,10 +258,20 @@ class SiteClient:
                 m.country = line.split(":", 1)[-1].strip()
             elif line.startswith("سال"):
                 m.year = line.split(":", 1)[-1].strip()
-        # پوستر
-        pm = re.search(r'(https?://[^\s"\'<>]+/pic-list/[^\s"\'<>]+\.jpg)', text)
+        # پوستر — jpg, jpeg, png, webp
+        pm = re.search(r'(https?://[^\s"\'<>]+/pic-list/[^\s"\'<>]+\.(?:jpe?g|png|webp))(?:\?[^\s"\'<>]*)?', text)
         if pm:
             m.poster = pm.group(1)
+        if not m.poster:
+            # الگوی دوم: هر img با poster/cover در کلاس
+            pm2 = re.search(r'<img[^>]+class=["\'][^"\'>]*(?:poster|cover|thumb)[^"\'>]*["\'][^>]+src=["\']([^"\'>]+)["\']', text, re.I)
+            if pm2:
+                m.poster = pm2.group(1)
+        if not m.poster:
+            # الگوی سوم: اولین img بزرگ در صفحه
+            pm3 = re.search(r'<img[^>]+src=["\']([^"\'>]+\.(?:jpe?g|png|webp))(?:\?[^\s"\'<>]*)?["\']', text, re.I)
+            if pm3:
+                m.poster = pm3.group(1)
         # بلاک توضیحات (DetitlesDes): شامل نام اصلی/محصول/کارگردان/ستارگان/خلاصه
         des = re.search(r'DetitlesDes[^"]*"[^>]*>(.*?)</div>', text, re.S)
         if des:
