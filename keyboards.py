@@ -39,6 +39,20 @@ def main_menu_kb(is_admin: bool = False) -> ReplyKeyboardMarkup:
                                input_field_placeholder="نام فیلم را بنویسید…")
 
 
+def start_inline_kb(is_admin: bool = False) -> InlineKeyboardMarkup:
+    """دکمه‌های شیشه‌ای برای پیام استارت/خوش‌آمد."""
+    rows = [
+        [InlineKeyboardButton("🔍 جستجوی فیلم", callback_data="menu:search")],
+        [InlineKeyboardButton("❤️ علاقه‌مندی‌ها", callback_data="menu:fav"),
+         InlineKeyboardButton("🕒 تماشا شده‌ها", callback_data="menu:hist")],
+        [InlineKeyboardButton("📜 جستجوهای اخیر", callback_data="menu:recent"),
+         InlineKeyboardButton("📖 راهنما", callback_data="menu:help")],
+    ]
+    if is_admin:
+        rows.append([InlineKeyboardButton("🛠 پنل مدیریت", callback_data="menu:admin")])
+    return InlineKeyboardMarkup(rows)
+
+
 def search_results_kb(results: List[SearchResult]) -> InlineKeyboardMarkup:
     """لیست نتایج جستجو در چت خصوصی — هر فیلم یک دکمه."""
     rows = []
