@@ -1,6 +1,7 @@
-python-telegram-bot[job-queue]
+python-telegram-bot==21.7
 requests[socks]
 numpy
 Pillow
-Flask
+Flask==3.0.3
 urllib3<2
+anthropic
