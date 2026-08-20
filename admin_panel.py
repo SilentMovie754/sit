@@ -211,6 +211,28 @@ async def on_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             await q.message.reply_html(body[:4000], reply_markup=kb.back_home_kb())
         await q.answer(); return
 
+    if action == "aisettings":
+        await _show_ai_settings(q)
+        return
+
+    if action == "aitoken":
+        pending_admin[uid] = "set_ai_token"
+        await q.edit_message_text(
+            "🔑 <b>تنظیم توکن هوش مصنوعی</b>\n\n"
+            "توکن API Anthropic Claude را بفرستید.\n"
+            "این توکن در دیتابیس ذخیره می‌شود.\n\n"
+            "برای لغو: /cancel",
+            parse_mode=ParseMode.HTML, reply_markup=kb.back_home_kb())
+        await q.answer(); return
+
+    if action == "aitoggle":
+        current = db.get_setting("ai_enabled", "0")
+        new_val = "0" if current == "1" else "1"
+        db.set_setting("ai_enabled", new_val)
+        status = "✅ فعال" if new_val == "1" else "❌ غیرفعال"
+        await _show_ai_settings(q, alert_msg=f"جستجوی هوشمند {status} شد")
+        return
+
     await q.answer()
 
 
@@ -271,6 +293,50 @@ async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
         pending_admin.pop(uid, None)
         await _do_broadcast(update, context, text)
         return
+
+    if action == "set_ai_token":
+        token = text.strip()
+        if not token:
+            await update.effective_message.reply_text("توکن نمی‌تواند خالی باشد.")
+            return
+        db.set_setting("ai_token", token)
+        pending_admin.pop(uid, None)
+        await update.effective_message.reply_text(
+            "✅ توکن هوش مصنوعی ذخیره شد.",
+            reply_markup=kb.admin_panel_kb())
+        return
+
+
+async def _show_ai_settings(q, alert_msg: str = "") -> None:
+    """نمایش تنظیمات جستجوی هوشمند."""
+    ai_enabled = db.get_setting("ai_enabled", "0") == "1"
+    ai_token = db.get_setting("ai_token", "")
+    token_display = f"<code>{ai_token[:8]}...{ai_token[-4:]}</code>" if ai_token and len(ai_token) > 12 else (f"<code>{ai_token}</code>" if ai_token else "❌ تنظیم نشده")
+    status = "✅ فعال" if ai_enabled else "❌ غیرفعال"
+    toggle_text = "❌ غیرفعال کردن" if ai_enabled else "✅ فعال کردن"
+    toggle_cb = "adm:aitoggle"
+
+    text = (
+        "🤖 <b>جستجوی هوشمند (AI)</b>\n\n"
+        f"وضعیت: {status}\n"
+        f"توکن: {token_display}\n\n"
+        "کاربر عکس پوستر فیلم را می‌فرستد و نام فیلم را می‌نویسد.\n"
+        "هوش مصنوعی عکس را تحلیل کرده و نام دقیق انگلیسی را پیدا می‌کند\n"
+        "سپس در سایت جستجو می‌شود."
+    )
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton(toggle_text, callback_data=toggle_cb)],
+        [InlineKeyboardButton("🔑 تغییر توکن", callback_data="adm:aitoken")],
+        [InlineKeyboardButton("🔙 بازگشت", callback_data="adm:home")],
+    ])
+    try:
+        await q.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+    except BadRequest:
+        await q.message.reply_html(text, reply_markup=markup)
+    if alert_msg:
+        await q.answer(alert_msg, show_alert=True)
+    else:
+        await q.answer()
 
 
 async def _do_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
