@@ -155,11 +155,14 @@ async def download_bytes(url: str) -> Optional[bytes]:
 # ---------------- دستورات کاربر ----------------
 WELCOME = (
     "🎬 <b>به ربات SilentMovie خوش آمدید!</b>\n\n"
-    "کافیست نام فیلم یا سریال مورد نظرتان را بنویسید تا برایتان جستجو کنم.\n"
-    "مثال: <code>the lord of the rings</code>\n\n"
-    "پس از انتخاب فیلم، اطلاعات کامل همراه پوستر نمایش داده می‌شود و می‌توانید "
-    "روی هر قسمت بزنید تا لینک پخش در <b>VLC</b> ساخته شود.\n\n"
-    "از دکمه‌های پایین صفحه استفاده کنید 👇"
+    "🍿 کافیست نام فیلم یا سریال مورد نظرتان را ارسال کنید "
+    "تا برایتان جستجو کنم.\n\n"
+    "🔎 <b>مثال:</b> <code>The Lord of the Rings</code>\n\n"
+    "🎥 پس از انتخاب فیلم، اطلاعات کامل و پوستر آن نمایش داده می‌شود. "
+    "سپس می‌توانید کیفیت و قسمت موردنظر خود را انتخاب کرده و "
+    "فیلم را مستقیماً داخل پلیر تماشا کنید.\n\n"
+    "⚡ سریع، ساده و بدون نیاز به برنامه‌های اضافی\n\n"
+    "👇 از دکمه‌های پایین صفحه استفاده کنید."
 )
 
 SEARCH_PROMPT = "🔍 نام فیلم یا سریالی که می‌خواهید را بنویسید:"
@@ -749,10 +752,13 @@ def build_application() -> Application:
     app.add_error_handler(on_error)
 
     # زمان‌بندی بکاپ دیتابیس
-    interval = max(0.1, config.BACKUP_INTERVAL_HOURS) * 3600
-    app.job_queue.run_repeating(job_send_db_backup, interval=interval,
-                                first=interval, name="db_backup")
-    log.info("بکاپ دیتابیس هر %.1f ساعت ارسال می‌شود", config.BACKUP_INTERVAL_HOURS)
+    if app.job_queue:
+        interval = max(0.1, config.BACKUP_INTERVAL_HOURS) * 3600
+        app.job_queue.run_repeating(job_send_db_backup, interval=interval,
+                                    first=interval, name="db_backup")
+        log.info("بکاپ دیتابیس هر %.1f ساعت ارسال می‌شود", config.BACKUP_INTERVAL_HOURS)
+    else:
+        log.warning("job_queue فعال نیست — بکاپ خودکار غیرفعال شد. مطمئن شوید python-telegram-bot[job-queue] نصب باشد.")
     return app
 
 
